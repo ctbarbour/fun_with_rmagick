@@ -1,5 +1,8 @@
 require 'RMagick'
 require 'celluloid'
+require 'benchmark'
+require 'socket'
+require 'msgpack'
 
 class ImageWriter
   def initialize(image_list)
@@ -52,11 +55,11 @@ class Endorser
     y_margin_padding = 10
 
     pages = Magick::Image.read(source).inject(Magick::ImageList.new) do |pages, page|
-      info "Endorsing #{source} (#{bates_number})"
+      #info "Endorsing #{source} (#{bates_number})"
       endorsement_draw(page).annotate(page, 0, 0, x_margin_padding, y_margin_padding, @endorsement)
       bates_draw(page).annotate(page, 0, 0, x_margin_padding, y_margin_padding, bates_number.to_s)
 
-      info "Done #{source} (#{bates_number})"
+      #info "Done #{source} (#{bates_number})"
       bates_number = bates_number.next
       pages << page
     end
@@ -158,12 +161,34 @@ class EndorsingActor
   include Celluloid
 
   def initialize(endorsement)
-    @endorser = Endorser.new(endorsement)
+    #@endorser = Endorser.new(endorsement)
+    @endorsement = endorsement
   end
 
   def endorse(source, sink, starting_bates)
+    child_socket, parent_socket = Socket.pair(:UNIX, :DGRAM, 0)
+    maxlen = 10000
+
+    pid = fork do
+      parent_socket.close
+      source, out = MessagePack.unpack(child_socket.recv(maxlen))
+
+      start_bates = BatesNumber.new("TEST_")
+
+      endorser = Endorser.new("CONFIDENTIAL")
+      result = endorser.endorse(source, out, starting_bates)
+
+      child_socket.send(MessagePack.pack(result), 0)
+    end
+
+    child_socket.close
+
     out = File.join(sink, File.basename(source))
-    @endorser.endorse(source, out, starting_bates)
+    message = MessagePack.pack([ source, out ])
+    parent_socket.send(message, 0)
+
+    response = parent_socket.recv(maxlen)
+    MessagePack.unpack(response)
   end
 end
 
@@ -184,10 +209,27 @@ end
 if __FILE__ == $0
 
   EndorsingPool.run!
-  workers = Celluloid::Actor[:endorsing_pool]
-  results = FileExplorer.new(ARGV[0]).explore do |fd|
-    workers.future(:endorse, fd, ARGV[1], BatesNumber.new("TEST_"))
-  end
+  #workers = Celluloid::Actor[:endorsing_pool]
 
-  puts "Endorsed #{results.map(&:value).reduce(0, :+)} pages"
+  workers = EndorsingActor.new("CONFIDENTIAL")
+
+  bm_results = Benchmark.bmbm do |bm|
+
+    bm.report(:async) do
+      results = FileExplorer.new(ARGV[0]).explore do |fd|
+        workers.future(:endorse, fd, ARGV[1], BatesNumber.new("TEST_"))
+      end
+
+      #puts "Endorsed #{results.map(&:value).reduce(0, :+)} pages"
+    end
+
+    bm.report(:sync) do
+      endorser = Endorser.new("CONFIDENTIAL")
+
+      FileExplorer.new(ARGV[0]).explore do |fd|
+        sink = File.join(ARGV[1], File.basename(fd))
+        endorser.endorse(fd, sink, BatesNumber.new("TEST_"))
+      end
+    end
+  end
 end

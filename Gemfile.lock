@@ -5,14 +5,17 @@ GEM
       facter (>= 1.6.12)
       timers (>= 1.0.0)
     facter (1.6.17)
+    msgpack (0.5.3)
     rmagick (2.13.2)
     snappy (0.0.4)
     timers (1.1.0)
 
 PLATFORMS
+  java
   ruby
 
 DEPENDENCIES
   celluloid
+  msgpack
   rmagick
   snappy
